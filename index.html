@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Universal 3D Model Viewer</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            font-family: Arial, sans-serif; 
+        }
+        #model-viewer { 
+            width: 100vw; 
+            height: 100vh; 
+        }
+        #loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 1000;
+        }
+        #error-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255,0,0,0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 1000;
+            text-align: center;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-overlay">
+        <h2>Loading Model... Please Wait</h2>
+    </div>
+    <div id="error-overlay">
+        <h2>Error Loading Model</h2>
+        <p id="error-message"></p>
+    </div>
+    <div id="model-viewer"></div>
+
+    <!-- Essential Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <!-- Compression and Loader Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/fflate@0.7.4/umd/index.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        class UniversalModelViewer {
+            constructor(containerId = 'model-viewer') {
+                this.container = document.getElementById(containerId);
+                this.loadingOverlay = document.getElementById('loading-overlay');
+                this.errorOverlay = document.getElementById('error-overlay');
+                this.errorMessage = document.getElementById('error-message');
+                
+                this.scene = null;
+                this.camera = null;
+                this.renderer = null;
+                this.controls = null;
+                this.model = null;
+                
+                this.initScene();
+            }
+
+            initScene() {
+                // Scene setup
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0xf0f0f0);
+
+                // Camera
+                this.camera = new THREE.PerspectiveCamera(
+                    45, 
+                    window.innerWidth / window.innerHeight, 
+                    0.1, 
+                    1000
+                );
+                this.camera.position.set(0, 5, 10);
+
+                // Renderer
+                this.renderer = new THREE.WebGLRenderer({ 
+                    antialias: true,
+                    alpha: true 
+                });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setPixelRatio(window.devicePixelRatio);
+                this.container.appendChild(this.renderer.domElement);
+
+                // Orbit Controls
+                this.controls = new THREE.OrbitControls(
+                    this.camera, 
+                    this.renderer.domElement
+                );
+                this.controls.enableDamping = true;
+                this.controls.dampingFactor = 0.05;
+
+                // Lighting
+                this.addLights();
+
+                // Resize handler
+                window.addEventListener('resize', () => this.onWindowResize(), false);
+            }
+
+            addLights() {
+                // Ambient light
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+                this.scene.add(ambientLight);
+
+                // Directional lights from multiple angles
+                const directions = [
+                    [1, 1, 1],
+                    [-1, -1, -1],
+                    [1, -1, 1],
+                    [-1, 1, -1]
+                ];
+
+                directions.forEach(([x, y, z]) => {
+                    const light = new THREE.DirectionalLight(0xffffff, 0.5);
+                    light.position.set(x * 5, y * 5, z * 5);
+                    this.scene.add(light);
+                });
+            }
+
+            loadModel(modelPath) {
+                // Reset previous state
+                this.hideOverlays();
+                this.showLoadingOverlay();
+
+                // Determine loader based on file extension
+                const extension = modelPath.split('.').pop().toLowerCase();
+                let loader;
+
+                switch(extension) {
+                    case 'gltf':
+                    case 'glb':
+                        loader = new THREE.GLTFLoader();
+                        break;
+                    case 'fbx':
+                        loader = new THREE.FBXLoader();
+                        break;
+                    default:
+                        this.showErrorOverlay(`Unsupported file format: .${extension}`);
+                        return;
+                }
+
+                // Load model
+                loader.load(
+                    modelPath,
+                    (loadedModel) => {
+                        // Handle different loader types
+                        this.model = extension === 'fbx' ? loadedModel : loadedModel.scene;
+                        
+                        // Clear any existing model
+                        this.scene.children = this.scene.children.filter(
+                            child => child instanceof THREE.Light
+                        );
+                        
+                        // Center and scale model
+                        this.centerAndScaleModel(this.model);
+                        
+                        // Add to scene
+                        this.scene.add(this.model);
+                        
+                        // Hide loading overlay
+                        this.hideLoadingOverlay();
+                        
+                        // Start animation
+                        this.animate();
+                    },
+                    (xhr) => {
+                        // Progress
+                        const percentLoaded = (xhr.loaded / xhr.total * 100);
+                        console.log(`${percentLoaded.toFixed(2)}% loaded`);
+                    },
+                    (error) => {
+                        // Error handling
+                        console.error('Error loading model:', error);
+                        this.showErrorOverlay(error.message || 'Failed to load model');
+                    }
+                );
+            }
+
+            centerAndScaleModel(model) {
+                // Compute bounding box
+                const box = new THREE.Box3().setFromObject(model);
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 5 / maxDim;
+
+                // Center and scale
+                model.scale.set(scale, scale, scale);
+                model.position.sub(box.getCenter(new THREE.Vector3()));
+            }
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+                this.controls.update();
+                this.renderer.render(this.scene, this.camera);
+            }
+
+            onWindowResize() {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+
+            showLoadingOverlay() {
+                this.loadingOverlay.style.display = 'flex';
+            }
+
+            hideLoadingOverlay() {
+                this.loadingOverlay.style.display = 'none';
+            }
+
+            showErrorOverlay(message) {
+                this.errorMessage.textContent = message;
+                this.errorOverlay.style.display = 'flex';
+                this.hideLoadingOverlay();
+            }
+
+            hideOverlays() {
+                this.loadingOverlay.style.display = 'none';
+                this.errorOverlay.style.display = 'none';
+            }
+        }
+
+        // Global function to load model from path
+        function loadModelFromPath(modelPath) {
+            // Create new viewer or reuse existing
+            window.modelViewer = window.modelViewer || new UniversalModelViewer();
+            window.modelViewer.loadModel(modelPath);
+        }
+
+        // Optional: Automatically load a model when page loads
+        // Uncomment and replace with your model path
+        document.addEventListener('DOMContentLoaded', () => {
+            loadModelFromPath('FINAL_MODEL.fbx');
+        });
+    </script>
+</body>
+</html>
